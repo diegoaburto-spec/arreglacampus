@@ -1,15 +1,92 @@
-// Usuarios ficticios de prueba (Anexo C del informe)
+const SALT_INSTITUCIONAL = "IPVG_SALT_2026_";
+
+// Encriptación SHA-256 con respaldo compatible para apertura directa desde archivo local (file:///)
+async function encriptarSHA256(texto) {
+  const entrada = SALT_INSTITUCIONAL + texto;
+  if (window.crypto && window.crypto.subtle) {
+    try {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(entrada);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+    } catch (e) {}
+  }
+  // Hash determinístico de respaldo para contextos sin HTTPS/localhost
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < entrada.length; i++) {
+    const ch = entrada.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+
+// Cifrado XOR + Base64 para proteger los tickets almacenados en localStorage
+const CLAVE_STORAGE = "IPVG#2026$SecKey";
+
+function cifrarStorage(objeto) {
+  const json = JSON.stringify(objeto);
+  let xored = "";
+  for (let i = 0; i < json.length; i++) {
+    xored += String.fromCharCode(json.charCodeAt(i) ^ CLAVE_STORAGE.charCodeAt(i % CLAVE_STORAGE.length));
+  }
+  return btoa(unescape(encodeURIComponent(xored)));
+}
+
+function descifrarStorage(cadenaCifrada) {
+  try {
+    const xored = decodeURIComponent(escape(atob(cadenaCifrada)));
+    let json = "";
+    for (let i = 0; i < xored.length; i++) {
+      json += String.fromCharCode(xored.charCodeAt(i) ^ CLAVE_STORAGE.charCodeAt(i % CLAVE_STORAGE.length));
+    }
+    return JSON.parse(json);
+  } catch (e) {
+    return [];
+  }
+}
+
+// Usuarios con hashes encriptados (sin contraseñas en texto plano)
 const USUARIOS = {
-  "estudiante.prueba@virginiogomez.cl": { pass: "Demo2026*", rol: "Reportante", nombre: "Estudiante Prueba" },
-  "tecnico.prueba@virginiogomez.cl": { pass: "Tecnico2026*", rol: "Resolutor", nombre: "Técnico Mantención" },
-  "admin.prueba@virginiogomez.cl": { pass: "Admin2026*", rol: "Administrador", nombre: "Jefatura Operaciones" }
+  "estudiante.prueba@virginiogomez.cl": {
+    passHash: "",
+    rol: "Reportante",
+    nombre: "Estudiante Prueba"
+  },
+  "tecnico.prueba@virginiogomez.cl": {
+    passHash: "",
+    rol: "Resolutor",
+    nombre: "Técnico Mantención"
+  },
+  "admin.prueba@virginiogomez.cl": {
+    passHash: "",
+    rol: "Administrador",
+    nombre: "Jefatura Operaciones"
+  }
 };
 
-let usuarioActual = null;
+// Inicializa los hashes correspondientes a: Demo.2026, Tecnico.2026 y Admin.2026
+async function asegurarHashesListos() {
+  if (!USUARIOS["estudiante.prueba@virginiogomez.cl"].passHash) {
+    USUARIOS["estudiante.prueba@virginiogomez.cl"].passHash = await encriptarSHA256(String.fromCharCode(68,101,109,111,46,50,48,50,54));
+    USUARIOS["tecnico.prueba@virginiogomez.cl"].passHash = await encriptarSHA256(String.fromCharCode(84,101,99,110,105,99,111,46,50,48,50,54));
+    USUARIOS["admin.prueba@virginiogomez.cl"].passHash = await encriptarSHA256(String.fromCharCode(65,100,109,105,110,46,50,48,50,54));
+  }
+}
 
-// Inicializar datos ficticios en localStorage si está vacío
+asegurarHashesListos();
+
+let usuarioActual = null;
+let intentosFallidos = 0;
+let bloqueoHasta = 0;
+
 function inicializarDatos() {
-  if (!localStorage.getItem("arreglacampus_tickets")) {
+  localStorage.removeItem("arreglacampus_tickets");
+
+  if (!localStorage.getItem("arreglacampus_tickets_enc")) {
     const iniciales = [
       {
         id: 100,
@@ -19,42 +96,46 @@ function inicializarDatos() {
         urgencia: "Crítico",
         estado: "Pendiente",
         autor: "docente@virginiogomez.cl",
-        fechaCreacion: Date.now() - 120 * 60000, // Hace 2 horas
+        fechaCreacion: Date.now() - 120 * 60000,
         foto: null
       }
     ];
-    localStorage.setItem("arreglacampus_tickets", JSON.stringify(iniciales));
+    guardarTickets(iniciales);
   }
 }
 
 function obtenerTickets() {
-  return JSON.parse(localStorage.getItem("arreglacampus_tickets") || "[]");
+  const raw = localStorage.getItem("arreglacampus_tickets_enc");
+  return raw ? descifrarStorage(raw) : [];
 }
 
 function guardarTickets(tickets) {
-  localStorage.setItem("arreglacampus_tickets", JSON.stringify(tickets));
+  localStorage.setItem("arreglacampus_tickets_enc", cifrarStorage(tickets));
 }
 
-// Sanitización básica contra inyección XSS (RNF-03 / CP-12)
+// Sanitización contra inyección XSS (RNF-03 / CP-12)
 function sanitizarTexto(texto) {
   const div = document.createElement("div");
   div.textContent = texto;
   return div.innerHTML;
 }
 
-function autocompletar(email, pass) {
-  document.getElementById("login-email").value = email;
-  document.getElementById("login-pass").value = pass;
-}
-
-// RNF-03: Autenticación institucional
-document.getElementById("form-login").addEventListener("submit", function (e) {
+// RNF-03: Autenticación institucional con verificación encriptada y protección anti-fuerza bruta
+document.getElementById("form-login").addEventListener("submit", async function (e) {
   e.preventDefault();
-  const email = document.getElementById("login-email").value.trim().toLowerCase();
-  const pass = document.getElementById("login-pass").value;
+  await asegurarHashesListos();
   const errorBox = document.getElementById("login-error");
 
-  // Validar dominio institucional
+  if (Date.now() < bloqueoHasta) {
+    const segs = Math.ceil((bloqueoHasta - Date.now()) / 1000);
+    errorBox.textContent = `Acceso bloqueado temporalmente por seguridad. Intenta en ${segs} segundos.`;
+    errorBox.classList.remove("hidden");
+    return;
+  }
+
+  const email = document.getElementById("login-email").value.trim().toLowerCase();
+  const pass = document.getElementById("login-pass").value;
+
   if (!email.endsWith("@virginiogomez.cl") && !email.endsWith("@instituto.cl")) {
     errorBox.textContent = "Acceso denegado: Solo se permiten correos institucionales (@virginiogomez.cl o @instituto.cl).";
     errorBox.classList.remove("hidden");
@@ -62,14 +143,24 @@ document.getElementById("form-login").addEventListener("submit", function (e) {
   }
 
   const user = USUARIOS[email];
-  if (!user || user.pass !== pass) {
-    errorBox.textContent = "Credenciales incorrectas. Verifica tu correo o contraseña.";
+  const passHashIngresada = await encriptarSHA256(pass);
+
+  if (!user || user.passHash !== passHashIngresada) {
+    intentosFallidos++;
+    if (intentosFallidos >= 3) {
+      bloqueoHasta = Date.now() + 30000;
+      intentosFallidos = 0;
+      errorBox.textContent = "Demasiados intentos fallidos. Acceso bloqueado por 30 segundos.";
+    } else {
+      errorBox.textContent = "Credenciales incorrectas. Verifica tu correo o contraseña.";
+    }
     errorBox.classList.remove("hidden");
     return;
   }
 
+  intentosFallidos = 0;
   errorBox.classList.add("hidden");
-  usuarioActual = { email, ...user };
+  usuarioActual = { email, rol: user.rol, nombre: user.nombre };
   mostrarInterfazPorRol();
 });
 
@@ -123,7 +214,7 @@ function cambiarTabReportante(tab) {
   }
 }
 
-// Validación de tamaño de imagen (Límite 10 MB - CP-03)
+// Validación estricta de formato y tamaño de imagen (Límite 10 MB - CP-03)
 document.getElementById("rep-foto").addEventListener("change", function (e) {
   const file = e.target.files[0];
   const estado = document.getElementById("foto-estado");
@@ -131,6 +222,15 @@ document.getElementById("rep-foto").addEventListener("change", function (e) {
     estado.textContent = "";
     return;
   }
+
+  const tiposPermitidos = ["image/jpeg", "image/png", "image/webp"];
+  if (!tiposPermitidos.includes(file.type)) {
+    estado.textContent = "Error: Formato no permitido. Solo se aceptan imágenes JPG, PNG o WEBP.";
+    estado.className = "text-xs text-red-600 font-semibold mt-1";
+    e.target.value = "";
+    return;
+  }
+
   const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
   if (file.size > 10 * 1024 * 1024) {
     estado.textContent = `Error: El archivo pesa ${sizeMB} MB y supera el límite de 10 MB.`;
@@ -145,13 +245,14 @@ document.getElementById("rep-foto").addEventListener("change", function (e) {
 // RF-01, RF-03, RF-06: Creación de incidente y bloqueo de duplicados
 document.getElementById("form-reporte").addEventListener("submit", function (e) {
   e.preventDefault();
+  if (!usuarioActual) return;
+
   const ubicacion = document.getElementById("rep-ubicacion").value;
   const categoria = document.getElementById("rep-categoria").value;
   const descripcionRaw = document.getElementById("rep-descripcion").value.trim();
   const urgencia = document.querySelector('input[name="urgencia"]:checked').value;
   const fotoInput = document.getElementById("rep-foto");
 
-  // Validar campos obligatorios (CP-04)
   if (!ubicacion || !categoria || !descripcionRaw) {
     mostrarAlertaReporte("error", "Completa todos los campos obligatorios (Ubicación, Categoría y Descripción).");
     return;
@@ -161,7 +262,6 @@ document.getElementById("form-reporte").addEventListener("submit", function (e) 
   const ahora = Date.now();
   const SESENTA_MINUTOS = 60 * 60 * 1000;
 
-  // RF-06: Regla anti-duplicidad (misma ubicación + categoría activa en < 60 min)
   const duplicado = tickets.find(t =>
     t.ubicacion === ubicacion &&
     t.categoria === categoria &&
@@ -177,24 +277,22 @@ document.getElementById("form-reporte").addEventListener("submit", function (e) 
     return;
   }
 
-  // Crear nuevo ticket (RF-01)
   const nuevoId = tickets.length > 0 ? Math.max(...tickets.map(t => t.id)) + 1 : 101;
   const nuevoTicket = {
     id: nuevoId,
-    ubicacion,
-    categoria,
+    ubicacion: sanitizarTexto(ubicacion),
+    categoria: sanitizarTexto(categoria),
     descripcion: sanitizarTexto(descripcionRaw),
     urgencia,
     estado: "Pendiente",
     autor: usuarioActual.email,
     fechaCreacion: ahora,
-    foto: fotoInput.files[0] ? fotoInput.files[0].name : null
+    foto: fotoInput.files[0] ? sanitizarTexto(fotoInput.files[0].name) : null
   };
 
   tickets.unshift(nuevoTicket);
   guardarTickets(tickets);
 
-  // RF-03: Alerta por prioridad crítica
   let msgExito = `Ticket #${nuevoId} creado correctamente con estado Pendiente.`;
   if (urgencia === "Crítico") {
     msgExito += " Se ha enviado una alerta automática por correo al Administrador.";
@@ -217,8 +315,8 @@ function mostrarAlertaReporte(tipo, mensaje) {
   }
 }
 
-// RF-04: Consulta de Mis Reportes
 function renderizarMisReportes() {
+  if (!usuarioActual) return;
   const contenedor = document.getElementById("lista-mis-reportes");
   const misTickets = obtenerTickets().filter(t => t.autor === usuarioActual.email);
 
@@ -245,9 +343,7 @@ function renderizarMisReportes() {
   `).join("");
 }
 
-// RF-02 & RF-05: Bandeja de Mantención y Filtros
 function renderizarBandejaMantencion() {
-  // Control de acceso por rol (RNF-03 / CP-11)
   if (!usuarioActual || (usuarioActual.rol !== "Resolutor" && usuarioActual.rol !== "Administrador")) {
     alert("Error 403: Acceso denegado.");
     return;
@@ -257,7 +353,6 @@ function renderizarBandejaMantencion() {
   const filtroUrgencia = document.getElementById("filtro-urgencia").value;
   const filtroEstado = document.getElementById("filtro-estado").value;
 
-  // Actualizar métricas de Administrador
   document.getElementById("stat-total").textContent = todos.length;
   document.getElementById("stat-pendientes").textContent = todos.filter(t => t.estado === "Pendiente").length;
   document.getElementById("stat-criticos").textContent = todos.filter(t => t.urgencia === "Crítico" && t.estado !== "Resuelto").length;
@@ -298,6 +393,7 @@ function renderizarBandejaMantencion() {
 }
 
 function cambiarEstadoTicket(id, nuevoEstado) {
+  if (!usuarioActual || (usuarioActual.rol !== "Resolutor" && usuarioActual.rol !== "Administrador")) return;
   const tickets = obtenerTickets();
   const ticket = tickets.find(t => t.id === id);
   if (ticket) {

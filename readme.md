@@ -10,6 +10,6 @@ Sistema web progresivo para el reporte y gestión de fallas de infraestructura e
 2. Abrir el archivo `index.html` directamente en cualquier navegador web (o mediante la extensión *Live Server* en Visual Studio Code).
 
 ## Cuentas ficticias de prueba
-- **Reportante:** `estudiante.prueba@virginiogomez.cl` | Contraseña: `Demo2026*`
-- **Resolutor (Mantención):** `tecnico.prueba@virginiogomez.cl` | Contraseña: `Tecnico2026*`
-- **Administrador:** `admin.prueba@virginiogomez.cl` | Contraseña: `Admin2026*`
+- **Reportante:** `estudiante.prueba@virginiogomez.cl` | Contraseña: `Demo.2026`
+- **Resolutor (Mantención):** `tecnico.prueba@virginiogomez.cl` | Contraseña: `Tecnico.2026`
+- **Administrador:** `admin.prueba@virginiogomez.cl` | Contraseña: `Admin.2026`
